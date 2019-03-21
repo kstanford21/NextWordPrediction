@@ -1,0 +1,242 @@
+---
+title: "Evaluate Model"
+output: html_document
+---
+
+## Summary  
+This code tests the prediction model created in NgramGeneration.Rmd.  The script takes a portion of the test data, randomly splits it and guesses the next word by performing a search of the SQL database.  The next word is chosen from the returned data as the word with the highst probablility (can select Knesner-Ney and Stupid backoff probabilities) with ties broken using the frequency of the predicted words.  The output of this search is both the calculated percent of correct guesses, percent of guesses where the model failed to find a word and a data A data frame including the guessed and acutal frequency of next words.  This script inserts the word "FAIL" as a guess when a word is not found. As is, this code does not search unigrams.  In a final prediction model, the most common word could be used as the guess when the model fails to find a next word prediction.    
+  
+##Options
+Select options and generate clened test text to test model accuracy.  
+
+###-Input:  
+version: version to test (generated in NgramGeneration.Rmd)  
+size: number between 0 and 1 indicating the portion of the test data to evaluate  
+method: Select to evaluate stupid backoff or Knesner-Ney smoothing probability models  
+
+```{r options}
+knitr::opts_chunk$set(warning = FALSE, message = FALSE)
+# Options
+#ngram version to test (files generated in NgramGeneration)
+version <- "V1"
+#portion of test file to test (number between 0 and 1)
+size <- .00005
+#ngram genration generates the stupid backoff probablility and Knesner-Ney smoothing probability
+#select "stupid" to test accuracy of stupid backoff model
+#select "prob" for Knesner-Ney smoothing probability
+method <- "prob"
+
+#create lists of words to remove during cleaning with clean()
+#This should be the same as the cleaning function used to generate the model
+cursing <- readLines("profanity_short.csv", encoding = "UTF-8", skipNul = TRUE) #list of profanity
+stopwords <- c("oh", "lol", "and", "or", "the", "or", "by", "it", "an", "of", "its", "but", 
+               "so", "be", "do", "to", "if", "in", "at", "as", "be", "am", "is", "me", "my", 
+               "is", "id", "was","to", "with", "up", "too", "because", "at", "for", "since")
+remove <- list()
+remove[[1]] <- cursing
+remove[[2]] <- stopwords
+```
+
+##Setup  
+This section loads required packages, loads custom functions (clean.R to clean test data and ngSearch.R to search model for the most likely next words), and cleans the test data ("test")
+```{r setup}
+#load required packages
+require(RSQLite)
+require(stringr)
+require(dplyr)
+require(ggplot2)
+require(LaF)
+require(qdap)
+require(data.table)
+
+##Functions
+# cleans text data
+clean <- dget("clean.R")
+# Searches SQL database for next word
+ngSearch <- dget("ngSearch.R")
+
+#generates portion of test data to test
+#size of file chosen above (size)
+set.seed(123)
+folder.test <- paste0(version, "/test/")
+filelist <- list.files(path=folder.test, pattern="*.txt")
+test <- character() #check this 
+for(i in 1:length(filelist)){
+     file <- paste0(folder.test, filelist[[i]])
+     #get number of lines in file
+     lines <- length(readLines(file))
+     #get number of lines to use
+     nlines <- lines * size 
+     #read in test file
+     temp <- sample_lines(file, nlines) 
+     #clean test file
+     temp<- clean(temp, remove)
+     #remove lines with under 3 words
+     temp <- temp[wc(temp) >= 3]
+     test <- c(test, temp)
+}
+```
+
+##Evaluate Model
+Takes given options from "setup" then randomly cuts the string and predicts the next word and compares it to the next word using data in the SQL database generated in NgramGeneration.Rmd.  
+
+```{r evaluate}
+#last word guessed by model
+guess <- vector(length = length(test))
+#actual next word
+reality <- vector(length = length(test))
+#list of ngram files
+name <- paste0(version, "/final/ngrams.sqlite")
+db = dbConnect(SQLite(), dbname= paste(name)) 
+searchlist <- dbListTables(db) 
+
+for(i in 1:(length(test))){             
+      string <- test[[i]] 
+      #split string into words
+      string <- strsplit(string, " ")[[1]] 
+
+      #if string more than one word
+      if(length(string)>1){
+          # number of last word before predicted word    
+          end <- sample(1:(length(string)-1), 1)
+          # start of string to test
+          start <- max(end-3, 1)
+          #extreact actual next word   
+          realword <- string[[(end + 1)]]
+          data <- NULL  
+          #repeat while there isn't a found word and there are more words to analyze        
+          repeat{ 
+               words <- string[start:end] 
+               data <- ngSearch(words, searchlist, start, end, db)
+
+               if(!is.null(data)){
+                    if(method == "prob"){data <- arrange(data, desc(prob), desc(countB))}
+                    if(method == "stupid"){data <- arrange(data, desc(stupid), desc(countB))}
+                    theword <- data[1,"B"]
+               }
+               end = end-1           #end move back one word
+               start = max(end-3, 1) #start move back one word
+               #if a next word is found or there are no more words to test, exit loop  
+               if(end == 0){
+                    theword <- "FAIL"
+               } 
+               #break if a word is found
+               if(!is.na(theword)){
+                    break
+               }
+          }
+     #add real word and guess to list
+     guess[[i]] <- theword
+     reality[[i]] <- realword
+     #string in original data is one word
+     #these should have been removed
+     }else{  
+          guess[[i]] <- "NA"
+          reality[[i]] <- "NA"
+     }
+      rm(start, end, string, theword)
+}
+#disconnect from database
+dbDisconnect(db)
+```
+
+##Prediction summary
+Takes the predicted word, actual word and generates a summary.  
+  
+###Calculations:
+Word frequency is normalized to the number of words guessed and expressed as a percent (ex:  word frequency/total guesses *100).  Differences between the frequency of guessed words and frequency of actual next words (expressed as a percent).  These differences are plotted as a histogram.  Next the top 15 (under represented if >1) and bottom 15 differences (under represented if <0) are depicted as a bar chart.  Finally, the percent of guesses the model failed to generate and the percent of correct guesses is calculated and the table of actual and guessed word frequencies printed.  This detailed analysis allows for tweaking the model to improve accuracy.
+
+```{r summary}
+#data freame of if correct, guessed word and real word
+final <- data.frame(cbind(reality, guess), stringsAsFactors = FALSE)
+final$correct <- ifelse(final$guess == final$reality, TRUE, FALSE)
+
+#generate data frame of frequency of guessed words and real words
+guess <- final %>%
+  count(guess) %>%
+  mutate(Pct = n / sum(n)*100)
+colnames(guess) <- c("word", "nGuess", "pctGuess")
+reality <- final %>%
+  count(reality) %>%
+  mutate(Pct = n / sum(n)*100)
+colnames(reality) <- c("word", "nReality", "pctReality")
+freq <- merge(guess, reality, by = "word", all = TRUE)
+
+#calculate percent differences
+freq <-  replace(freq, is.na(freq), 0)
+freq <- freq %>%
+     mutate(difference = pctReality-pctGuess)
+freq2 <- subset(freq, word != "FAIL")
+freq2 <- freq2[order(freq2$difference, decreasing = TRUE),]
+
+ggplot(freq2, aes(difference)) +
+     geom_histogram(fill="blue", bins = 30, na.rm = TRUE, aes(y=..ncount..))+
+     theme_bw()+
+     ggtitle("Actual-Guessed Next Word Frequency")+
+     labs(y="Count (scaled to maximum of 1)", x = "Frequency")+
+     scale_x_continuous(expand = c(0, 0.01)) +
+     scale_y_continuous(expand = c(0, 0)) +
+     theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(size=1.8, lineend = "square"),
+          axis.title.x = element_text(size=14),
+          axis.title.y = element_text(size=14),
+          plot.title = element_text(hjust = 0.5, size = 20),
+          axis.text = element_text(size=10, color = "black"),
+          axis.ticks.length = unit(.15, "cm"),
+          axis.ticks = element_line(size = .75)
+     )
+
+
+ggplot(data=freq2[1:15,], aes(x=reorder(word, difference), y=difference)) +
+     geom_bar(stat="identity", fill = "blue")+
+     coord_flip() +
+     scale_y_continuous(expand = c(0, 0)) +
+     ggtitle(paste0("Highest Frequency Differences \n (under-represented if >0)"))+
+     labs(y="Actual - Guessed Frequency\n(percent)")+
+     theme_bw() +
+     theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(size=1.8, lineend = "square"),
+          axis.title.x = element_text(size=14),
+          axis.title.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, size = 20),
+          axis.text = element_text(size=14, color = "black"),
+          axis.ticks.length = unit(.15, "cm"),
+          axis.ticks = element_line(size = .75)
+     )
+
+ggplot(data=freq2[(nrow(freq2)-15):nrow(freq2),], aes(x=reorder(word, difference), y=difference, order = difference)) +
+     geom_bar(stat="identity", fill = "blue")+
+     coord_flip() +
+     ggtitle(paste0("Lowest Frequency Differences \n (over-represented if <0)"))+
+     labs(y="Actual - Guessed Frequency \n(percent)")+
+     theme_bw() +
+     theme(panel.grid.major = element_blank(),
+          panel.grid.minor = element_blank(),
+          panel.border = element_blank(),
+          axis.line = element_line(size=1.8, lineend = "square"),
+          axis.title.x = element_text(size=14),
+          axis.title.y = element_blank(),
+          plot.title = element_text(hjust = 0.5, size = 20),
+          axis.text = element_text(size=14, color = "black"),
+          axis.ticks.length = unit(.15, "cm"),
+          axis.ticks = element_line(size = .75)
+     )
+
+#caluclate amount where guess not generated and where guess correct
+pctfailure <- nrow(subset(final, guess == "FAIL"))/(nrow(final))*100
+correct <- table(final$correct)
+pctCorrect <- correct[[2]]/(nrow(final))*100
+print(paste0("Percent of Correct Guesses: ", round(pctCorrect, 2), "%"))
+print(paste0("Percent with no guess: ", round(pctfailure, 2), "%"))
+
+#print top final word stats and save as csv files
+head(freq)
+head(freq2)
+write.csv(freq, paste0(version, "/results1.csv"))
+write.csv(final, paste0(version, "/results2.csv"))
+```
+

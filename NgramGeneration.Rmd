@@ -1,0 +1,743 @@
+---
+title: "Ngram Generation"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+#How the Code works
+This code generates ngrams (of given length) and calculates the stupid backoff and knesner-ney smoothing porobabilities of the last word in each ngram.  The output is sotred in .csv files.  This allows for further analysis to determine the characteristics of ngrams in a corpus and tweaking next word prediction models.  It is optimized to give detailed, oraginzed ngrams for exploratory analysis, as well as  optimizing text cleaning methods and next prediciton models.  Chunking the corpus data allows for processing large text files. 
+
+Each ngram file (ex: unigrams, bigrams, ...) is saved in a directory for the given version, allowing for version control of ngram models. In addition to the version input, there are inputs for ngram size (ex: 4 for making 1-4grams or 3 for making 1-3grams), source text files and discounts for knesner-ney smoothing probability to customize output. These inputs allow for version control and facilitate tweaking the ngram model. It is recommended to put a readme file in each version to keep track of the actions performed in making the model.  
+
+To run the code, input selections for the options (version, ngram size, corpus source, size of data chunk, lists of words to remove, whether summary grapsh are desired, and discounts for Kneser-Ney smoothing.  When the code is run, it creates a new directory and subdirectories for the training dataset, test dataset, cleaned data, raw ngrams, and ngrams with probabalities of the last word calculated.  
+
+fter testing the model on the test data, it is often aparent that some words are over-represented an others over-represented. To improve performace, the model needs to be altered.  Altering the final ngram model can be performed at several levels. A To alter text cleaning, step can be added or removed from the cleaning funciton.  Additonally, a list of lists of words to remove from the sourse text is passed into this function.  In generating the ngrams, the number of predicted words can be decreased.  This is done by retaining onlty the top words found in 1-gram generation.  This is currently set to retain the top 10% of words.  To alter probability calculations, the discount for knesner-ney smoothing can be changed and alterations can be directly placed in the "probz" function.  It is also possible to insert code to increase or decrease the weight or words with certin frequencies, such as high-frequency stopwords which contain little informaion.   
+
+
+##Options
+Set options for ngram generation  
+-options set here will be used for later steps in generation  
+-set version for making ngram directories  
+-this section also reads in required functions
+```{r options}
+
+#all chunks
+version <- "V1"     #give this version a number
+ngrams <- 4         #create up to x-grams
+     
+#import data
+files <- c("blogs.txt", "news.txt", "twitter.txt")  #files in corpus
+size <- .075         #size of training set (.01-.99); remainder will be in test set
+
+#clean data      
+     
+#enter number of lines in each data "chunk" 
+#ngram generation may crash if chunk to large
+#smaller chungs reqiure more processing time
+chunk.size<-5000   
+     
+#create lists of words to remove during cleaning with clean()
+cursing <- readLines("profanity.csv", encoding = "UTF-8", skipNul = TRUE) #list of profanity
+
+stopwords <- c("oh", "lol", "and", "or", "the", "or", "by", "it", "an", "of", "its", "but", 
+               "so", "be", "do", "to", "if", "in", "at", "as", "be", "am", "is", "me", "my", 
+               "is", "id", "was","to", "with", "up", "too", "because", "at", "for", "since", 
+               "been", "you", "on")
+remove <- list()
+remove[[1]] <- cursing
+remove[[2]] <- stopwords
+     
+#ngram generation
+     #if stats is TRUE, summary data for ngrams returned
+          #returns list of ngram frequencies and top ngrams
+          #if FALSE, no data returned (ngrams still saved in .csv files)
+stats <- TRUE
+
+#discount list for kneser-ney smoothing
+     #choose a discount value for 2grams and more
+     #length needs to be ngrams-1 (ex: 3 if making up to 4-grams)
+     #list goes from 2-gram discount to 4-gram discount (lowest first)
+d <- c(.9, .8, 0)
+     
+```
+
+## Import Data
+###Inputs
+version (name for this version of ngrams) and ngrams(integer)  
+ngrams:  integer, makes up to n ngrams (if = 4, makes up to 4-grams)  
+size: (.001-.999) amount of data to be in training set  
+files: .txt files to make corpus from  
+  
+###Directories Made:  
+creates directory for the version  
+subdirectory: training and test; for training and test data  
+subdirectory:  cleaned; for cleaned training data
+subdirectory: ngrams;  for ngrams (subfolder for each size n-gram (ex:1gram and 2gram))  
+subdirectory: final; for ngrams with stupid backoff and knesner-ney probabilities calculated  
+
+###Actions:
+sets version for ngram files
+imports raw text
+separates into training and test sets and puts in training/test folders
+
+
+```{r setup, message=FALSE, warning=FALSE}
+#packages needed
+library(tidyr)
+library(tm)
+library(tidytext)
+library(data.table)
+library(stringr)
+library(RWeka)
+library(ngram) 
+library(textclean)
+library(knitr)
+library(ggplot2)
+library(dplyr)
+library(RSQLite)
+library(qdap)
+
+##Functions
+# cleans text data
+clean <- dget("clean.R")
+
+# take ngram files and splits them alphabetically
+makeUnigramsAlpha <- dget("makeUnigramsAlpha.R")
+
+# take ngram files and splits them alphabetically and writes into .csv files
+makeItAlpha <- dget("makeItAlpha.R")
+
+# calculate stupid backoff and Knesner-Ney smoothing probabilities of the last word in each ngram
+probz <- dget("probz.R")
+
+
+##   Create directories for taining, test set, raw ngrams and ngrams with final probabilities
+dir.create(paste(version))   #create parent directory for the version
+
+#create training, test and cleaned data set folders
+folders <- c("train", "test", "cleaned", "final") 
+     for (i in 1:length(folders))  {
+          dir.create(paste(version,folders[i], sep="/"))
+     }
+
+#create folders for raw ngrams ngrams
+#in a loop to allow for addition of folders for each ngram in additional directories
+  #an exaple being if the final nram model is stored in .csv files (must modify probz functioncode)
+folders <- c("ngram") 
+for (i in 1:length(folders))  {
+     dir.create(paste(version,folders[i], sep="/"))
+     for(j in 1:ngrams){
+          dir.create(paste(version, "/", folders[i], "/ngram", j, sep=""))   
+     }
+}
+
+folder.train <- paste0(version, "/train/")
+folder.test <- paste0(version, "/test/")
+
+## read data and save training and test set
+set.seed(123)
+for(i in 1:length(files)){
+     text <- readLines(paste(files[[i]]), encoding = "UTF-8", skipNul = TRUE)
+          lines <- size * length(text)#number of lines in file to use
+          trainLines <- sample(seq_len(length(text)), size = lines)
+          train <- text[trainLines]#create training set
+          test <- text[-trainLines]#create test set
+          writeLines(train, paste(folder.train,  files[[i]], sep = ""), sep = "\n")
+          writeLines(test, paste(folder.test,  files[[i]], sep = ""), sep = "\n")
+}
+```
+
+##Clean and Divide
+###Inputs:  
+chunk.size: number of lines to be placed into each data chunk
+-smaller chunk size means longer processing times
+-larger chung sizes risk running out of memory during ngram generation
+remove:  lists of words to remove
+-place lists of words to remove into "remove" (list of lists)
+-these words will be removed in cleaning
+
+###Actions
+-takes training data
+-divides into chunks so ngram generation doesn't run out of memory
+-places cleaned chunks in "cleaned" subfolder
+
+```{r cleanTrain, echo=FALSE}
+#Break corpus into chunks for processing and clean it
+#write results in new file
+corpus <- VCorpus(DirSource(directory=folder.train, encoding = "UTF-8",recursive=FALSE),
+                            readerControl = list(language = "en"))
+     
+for(t in 1:length(corpus)){
+     l<-1
+     h<-chunk.size
+     stp<-0
+     corp.size<-length(corpus[[t]]$content)
+     num <- 1
+     
+     # clean and write portions of data in files
+     repeat{  
+          if(stp==2)break
+          corpus.chunk<-corpus[[t]]$content[l:h]
+          l<-h+1
+          h<-h+chunk.size
+                    
+          #Clean and write chunks
+          temp <- clean(corpus.chunk, remove)
+          #remove lines with under 5 words
+          temp <- temp[wc(temp) >= 5]
+          num <- num  + 1
+          write.table(temp, file = paste(version, "/cleaned/chunk_", t, "_", num, ".txt", sep = ""),
+                           sep= "", row.names =FALSE, col.names = FALSE, quote = FALSE)
+               
+          #end when end of file reached
+          if(h>corp.size){
+               h<-corp.size
+               stp<-stp+1
+          }
+     }
+}
+
+rm(corpus.chunk, l, h, num, stp, t, corpus, chunk.size, temp)
+```
+
+##Unigrams
+-creates list of frequency of words    
+-places words and frequency in alphabetized files inside "version/ngram/1gram"  
+-uses "cleaned" subdirectory in version main directory  
+-generates summary statistics for words  
+-places top 10% of words in a list (goodWords)  
+-Statistics onnumber of words lost and corpus coverage if only "goodWords" used in sourse text generated  
+
+###Purpose of goodWords list
+-future ngrams will consist of part A and part B  
+-part B is the word to be predicted  
+-Part B will be filtered to remove ngrams where the last word not included in goodWords  
+-Retains less common words in part A  
+```{r unigrams, cache = TRUE}
+#increase JAVA memory from 512 to 1024
+options(java.parameters = "-Xmx1024m") 
+
+#make unigrams
+filelist <- list.files(path=paste0(version, "/cleaned/"), pattern="*.txt")
+ng <- list()
+for(i in 1:length(filelist)){
+     text <- readLines(paste(version, "/cleaned/", filelist[[i]], sep = ""))
+     ngtemp <- NGramTokenizer(text, Weka_control(min = 1, max = 1))
+     ng[[i]] <- data.table(table(ngtemp))
+     colnames(ng[[i]]) <- c("ng", "Freq")    
+}
+
+#combine lists of unigrams
+ng <- makeUnigramsAlpha(ng, version)
+ng <- rbindlist(ng)
+
+#summary of unigrams 
+print(paste("number of words:", sum(ng$Freq)))
+print(paste("Unique words:", nrow(ng))) 
+print("word frequency stats")
+summary(ng$Freq)
+     
+#calculate quantiles of words
+quantile(ng$Freq, probs = c(0.25, 0.5, .75, .9))
+
+#generate list of top 10% of words 
+#summarize how many words retained and corpus coverage
+cutoff <- quantile(ng$Freq, probs = .9)
+common <- subset(ng, Freq > cutoff)
+print(paste0("number of words: ", sum(common$Freq)))
+print(paste0("Unique words: ", nrow(common))) 
+print(paste0("unique words retained: ", signif(nrow(common)/nrow(ng)*100, digits = 3), "%"))
+print(paste0("word coverage: ", signif(sum(common$Freq)/sum(ng$Freq)*100, digits = 3), "%"))
+
+#save number of words for unigram probabilities
+nwords <- sum(ng$Freq)
+
+#make list of top 10% of words
+goodWords <- common$ng
+
+```
+
+##ngrams
+-Generate ngrams from cleaned text 
+-uses "ngrams" from above to determine length of ngrams made (if = 4, makes 1-, 2-, 3- and 4-grams)  
+-separates words into part A (begining word(s)) and part B (last word)  
+-places ngrams in alphabetized .csv files  
+###data collected  
+-frequency of all ngrams (labels removed) starting with each letter  
+-top 1% of ngrams starting with each letter and their counts   
+-number of ngrams starting with each letter  
+-this can be halted with by setting stats  to FALSE  
+-ngStats is a list of properties for each ngram (2-grams and above)  
+
+```{r ngrams, cache = TRUE}
+
+#make other ngrams 
+ngStats <- list()
+for(n in 2:ngrams){ #loop for each ngram above unigrams generated
+     ng <- list()
+     for(i in 1:length(filelist)){
+          text <- readLines(paste(version, "/cleaned/", filelist[[i]], sep = ""))#read text file
+          ngtemp <- NGramTokenizer(text, Weka_control(min = n, max = n))#create ngrams
+          ng[[i]] <- data.table(table(ngtemp))#make into data table
+          colnames(ng[[i]]) <- c("ng", "Freq")
+     }  
+          
+     #put ngrams into alphabatized files
+          #separates ngrams into part A and part B (word to be predicted)
+          #removes words in part B not in "GoodWords"
+          #makes file smaller while allowing for sparse terms to assist in prediction (partA)
+          #if goodwords is empty, doesn't remove words
+     ngStats[[(n-1)]] <- makeItAlpha(ng, version, n, goodWords, stats)
+}
+
+```
+
+
+##Graphs
+-takes information about ngrams and plots the frequency of top ngrams and all ngrams  
+```{r graphs, fig.align="left", fig.width=6}
+
+#generate graphs/tables of frequency and top ngrams
+if(stats==TRUE){
+     for(g in 2:ngrams){
+          temp <- ngStats[[g-1]]
+          value <- paste0((g), "-gram")
+
+          #frequency of given ngram  
+          ngFreq <- unlist(temp[[1]])
+          ngFreq <- data.frame(ngFreq)
+     
+          #histograms for given ngram
+          p1 <- ggplot(ngFreq, aes(log(ngFreq))) +
+               geom_histogram(fill="blue", bins = 30, na.rm = TRUE, aes(y=..ncount..))+
+               theme_bw()+
+               ggtitle(paste0("log(",value, " Counts)"))+
+               labs(y="Count (scaled to maximum of 1)", x = "log(Frequency)")+
+               scale_x_continuous(limits = c(1, 3), expand = c(0, 0)) +
+               scale_y_continuous(limits = c(0, 1.02), expand = c(0, 0)) +
+               theme(panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(),
+                    panel.border = element_blank(),
+                    axis.line = element_line(size=1.8, lineend = "square"),
+                    axis.title.x = element_text(size=14),
+                    axis.title.y = element_text(size=14),
+                    plot.title = element_text(hjust = 0.5, size = 20),
+                    axis.text = element_text(size=10, color = "black"),
+                    axis.ticks.length = unit(.15, "cm"),
+                    axis.ticks = element_line(size = .75)
+               )
+
+          #get top ngrams    
+          #top 1% of bigrams starting with each letter
+          top <- rbindlist(temp[[2]])
+          top <- setorderv(top, cols = "Freq", order=-1L, na.last=FALSE)
+          top$ng <- paste(top$A,"",top$B)
+     
+          maxVal <- max(top[1:10,]$Freq) *1.05
+          p3 <- ggplot(data=top[1:10,], aes(x=ng, y=Freq)) +
+               geom_bar(stat="identity", fill = "blue")+
+               coord_flip() +
+               scale_y_continuous(limits = c(0, maxVal), expand = c(0, 0)) +
+               ggtitle(paste0("Counts of most frequent ", value, "s"))+
+               labs(y="Frequency")+
+               theme_bw() +
+               theme(panel.grid.major = element_blank(),
+                    panel.grid.minor = element_blank(),
+                    panel.border = element_blank(),
+                    axis.line = element_line(size=1.8, lineend = "square"),
+                    axis.title.x = element_text(size=14),
+                    axis.title.y = element_blank(),
+                    plot.title = element_text(hjust = 0.5, size = 20),
+                    axis.text = element_text(size=14, color = "black"),
+                    axis.ticks.length = unit(.15, "cm"),
+                    axis.ticks = element_line(size = .75)
+               )
+          plot(p1)
+          plot(p3)
+     }
+}
+```
+
+##Tables
+-Generate table showing fequency of most common ngrams  
+```{r tables, results = "asis", fig.width = 4}
+if(stats==TRUE){
+     for(g in 2:ngrams){
+          temp <- ngStats[[g-1]]
+          value <- paste0((g), "-gram")
+
+          #get top ngrams    
+          #top 1% of bigrams starting with each letter
+          top <- rbindlist(temp[[2]])
+          top <- setorderv(top, cols = "Freq", order=-1L, na.last=FALSE)
+          top$ng <- paste(top$A,"",top$B)
+     
+          p2 <- kable(top[1:20,1:3], caption= paste0("Top", value, "s"))
+          print(p2)
+     }
+}
+
+```
+
+##Probabilities
+-takes ngrams from "ngram" subfolder  
+-calculates stupid backoff and Knesner-Ney probabilities for each part B
+-writes to final.sqlite with a table for each ngram
+
+###inputs
+d: discount vector of length ngram-2 (listed in "inputs chunk")
+-if no discount given defaults to 0
+```{r probabilities, cache = FALSE}
+
+#calculate ngram probabilities
+     #write to SQL database
+
+     # Create/Connect to a database
+     name <- paste0(version, "/final/ngrams.sqlite")
+     db = dbConnect(SQLite(), dbname= paste(name)) 
+for(g in 1:ngrams){
+
+     if(g>1){
+          discount <- d[g-1]
+     }else{
+          discount <-0
+     }
+     ng <- probz(g, discount, version, nwords, db)
+
+} 
+          
+#close database connection
+dbDisconnect(db)
+
+```
+
+
+##Function Explanation
+Here is an explanation of the functions used ingeneration of the model  
+
+###Clean
+Cleans training data  
+-exchange contractions for full word  
+-removes everything but alphabetic characters  
+-removes single letter words  
+-converts to lower case  
+-removes repeated words  
+-removes words with letters repeated 3 or more times  
+-removes words longer than 17 letters  
+-remove words passed in "remove"  
+-strips whitespace  
+  
+inputs:  
+-string to be cleaned    
+-remove-list of lists of words to be removed (ex: profanity, stopwords)  
+
+ouptut:  
+-Cleaned string  
+
+```{r clean, echo=TRUE}
+#clean data
+clean <- function(string, remove) {
+     temp <- gsub("<92>", "'", string)                      #sometimes imports ' as <92>; changes to '
+     temp <- replace_contraction(temp)                      #expands contractions
+     #replace contractions misses some contractions ending in 're
+     #also misses nouns followed by 's for is, but this is also posessive and "is" carries little info
+     temp <- gsub("'re ", " are ", temp)                    #fixes remaining contractions
+     temp <- gsub("([^A-Za-z ])+", "", x = temp)            #remove everything but letters    
+     temp <- tolower(temp)    #convert to lower
+     temp <- gsub("(\\w)\\1{2, }", " ", temp)               #remove words with repeated letters
+     temp <- gsub("(\\b\\w+\\b)(\\s+\\1)+", " ", temp)      #remove repeated words
+     temp <- gsub(" *\\b[[:alpha:]]{1}\\b *", " ", temp)    #remove single and letter words
+     temp <- gsub(" *\\b[[:alpha:]]{2}\\b *", " ", temp)   #remove double letter words
+     temp <- gsub("\\b[[:alpha:]]{17,}\\b", "", temp)       #remove words longer than 17 characters
+     
+     for(w in 1:length(remove)){
+          temp <- removeWords(temp, remove[[w]])            #remove curse words
+     }
+     
+     temp <- removePunctuation(temp)
+     temp <- stripWhitespace(temp)
+     return(temp)
+}
+```
+
+##MakeUnigramsAlpha
+Aggregates lists of unigrams from each data chunk  
+-Places unigrams and counts into data.tables by first letter  
+-One data.table for each letter of the alphabet  
+-writes each data.table in version/ngram/ngram1 as a csv file  
+-returns list of alphabetized data.tables  
+
+input:  
+-data: list of lists of unigrams from cleaned text files  
+-version:  version number (same as main directory name)  
+
+Output:  
+-list of 26 data.tables with unigrams starting with each letter of the alphabet and their frequencies  
+
+```{r makeUnigramsAlpha}
+# take ngram files and splits them alphabetically
+makeUnigramsAlpha<- function(data, version){
+     alpha <- letters
+     ngSplit <- list()
+
+     for(i in 1:length(alpha)){
+
+          tempAlpha <- data.table()
+          #grab ngrams starting with the ith letter
+          for(j in 1:length(data)){
+               colnames(data[[j]]) <- c("ng", "Freq")  #convert column names for use
+               temp <- data[[j]][grep(paste("^", alpha[[i]], sep = ""), data[[j]]$ng),]
+               tempAlpha <- rbind(tempAlpha, temp)
+          }
+          
+          #place data table in a list
+          ngSplit[[i]] <- tempAlpha
+          ngSplit[[i]] <- aggregate(ngSplit[[i]]$Freq, by=list(Category = ngSplit[[i]]$ng), 
+                                    FUN=sum, na.rm = TRUE)
+          colnames(ngSplit[[i]]) <- c("ng", "Freq")
+          
+          if(version !=0){
+               write.csv(ngSplit[[i]], paste0(version, "/ngram/ngram1/", alpha[[i]], "_ngram.csv"),
+                         row.names = FALSE)
+          }
+     }
+     return(ngSplit)
+}
+```
+
+##MakeItAlpha
+Aggregates lists ngrams from each data chunk  
+Splits last word (B) from rest of ngram(A)--allows for calculation of probabilities  
+Removes ngrams with a last word (B) not in "goodWords", a list of common words  
+-this decreases the size of files  
+-Still allows for accurrate predictions of part B  
+-Places ngrams in alpahbetized data.tables based on first letter of part A  
+Writes alphabetized ngrams (parts A and B) and frequency in .csv file  
+-version/ngram/ in subdiredtory for each ngram size (ex: 4gram vs 3gram)  
+-one file for each letter of the alphabet  
+Returns a list of ngram frequencies and a data.table for top 1% of ngrams starging with each letter  
+-Only performed when stats = TRUE  
+
+input:  
+-data: list of lists of ngrams from cleaned text files  
+-version:  version number (same as main directory name)  
+-n: ngram number (ex: 2 for 2-gram)  
+-goodWords:  list of most common words in corpus to keep in part B  
+-stats: TRUE-frequencies and most common ngrams returned; FALSE-return "complete"  
+
+Output:  
+-ngData:list of 2 items  
+1. list of 26 lists of frequencies for ngrams starting with each letter  
+2. list of 26 data.tables with top 1% of ngrams starting with each letter  
+
+```{r makeItAlpha}
+#creates alphabetized list of ngrams
+#separates first words and last words
+#returns ngram frequencies and top ngrams if stats = TRUE
+#removes ngrams with infrequent last words
+#writes ngrams in alphabetized .csv files
+makeItAlpha <- function(data, version, n, goodWords, stats = TRUE){
+     alpha <- letters              #list of letters (a-z)
+     ngSplit <- data.table()       #temporary data.table to hold ngrams starting with each letter
+     frequency <- list()           #store frequencies of ngrams starting with each lettter
+     top01 <- list()               #store top 1% of ngrams starting with each letter
+     
+
+     for(i in 1:length(alpha)){   
+          ngSplit <- data.table()
+          
+          #grab ngrams starting with the ith letter
+          for(j in 1:length(data)){     #loop for each ngram list in data
+               #extract ngrams starting with alpsa[[i]
+               rowlist <- grep(paste("^", alpha[[i]], sep = ""), data[[j]]$ng) 
+               if(length(rowlist >=1)){ #if ngrams extracted
+                    temp <- data[[j]][rowlist,]
+
+                    B<- word(temp$ng, start = -1, end = -1, sep = " ") #last word of ngram
+                    A<- word(temp$ng, start = 1, end = -2, sep = " ")  #ngram without last word
+               
+                    temp <- cbind(A, B, temp) #bind part A and B
+                    temp <- temp[,c("A","B", "Freq")]
+
+                    ngSplit <- rbind(ngSplit, temp) 
+                    colnames(ngSplit) <- c("A","B", "Freq")
+               }
+          }
+          
+          #aggregate data to get combined frequency
+          if(nrow(ngSplit >= 3)){  #if there are ngrams starting with that letter
+               ngSplit <- aggregate(ngSplit$Freq, by=list(ngSplit$A, ngSplit$B), FUN=sum, na.rm = TRUE)
+               colnames(ngSplit) <- c("A","B", "Freq")
+          }
+          if(!is.null(goodWords)){ #if the list goodWords exists, only keep ngrams where B is in this list
+               ngSplit<- ngSplit[ngSplit$B %in% goodWords, ]
+          }
+          
+          if(stats == TRUE){ #if stats is TRUE collect data for summary
+               #generate list of top 1% of ngrams starting with each letter
+               cutoff <- quantile(ngSplit$Freq, probs = .99)
+               top01[[i]]<- subset(ngSplit, Freq > cutoff)
+               
+               #frequency of ngrams starting with each letter
+               frequency[[i]] <- ngSplit$Freq
+          }
+          write.csv(ngSplit, paste0(version, "/ngram/ngram", n, "/", alpha[[i]], "_ngram.csv"), 
+                    row.names = FALSE)   #write alphabetized ngram file
+     } 
+     
+     print(paste0(n, "-grams done!"))   #prints statement to show progress
+     
+     #if generating stats, return them, if not return string saying "complete"
+     if(stats == TRUE){
+          ngData <- list(frequency, top01)
+          return(ngData)
+     }else{
+          ngData<- "complete" #returns string if stats not being collected, shows progress
+          return(ngData)
+     }
+}
+```
+
+##Probz
+Calculates counts for part A and B  
+-uniqueA:  number of ngrams where part A occurs  
+-uniqueB:  number of ngrams where part B occurs  
+-countA:  overall count of part A in ngrams  
+-countB:  overall count of part B in ngrams  
+Binds uniqueA, uniqueB, countA and countB to temporary ngram file   
+calculates stupid backoff probability (stupid) for part B of each ngram  
+calculates Kneser–Ney smoothing probability (prob) for part B of each ngram  
+
+input:  
+-file:  number for each ngram (ex: 2 for 2-gram)  
+-d: list of discounts to be used for Knesner-ney smoothing 
+-n: ngram number (ex: 2 for 2-gram)  
+-goodWords:  list of most common words in corpus to keep in part B  
+-stats: TRUE-frequencies and most common ngrams returned; FALSE-return "complete"  
+
+Output:  
+-ngData:list of 2 items  
+1. list of 26 lists of frequencies for ngrams starting with each letter  
+2. list of 26 data.tables with top 1% of ngrams starting with each letter  
+```{r probz}
+probz <- function(file, d, version){
+
+     #list files in folder for specified ngram
+     filelist <- list.files(path= paste0(version, "/ngram/ngram", file), pattern="*.csv")
+
+     uniqueA <- list()   #unique instances of part A
+     uniqueB <- list()   #unique instances of part B (word to be guessed)
+     countA <- list()    #overall count of part A
+     countB <- list()    #overall count of partB
+     nNgram <- 0         #number of uniquengrams
+     alpha <- letters    #list of letters
+     
+     #count unique values for part A and B
+     #count overall frequency for part A and B
+     #do loop for each file (ngrams separated by first letter)
+     for(i in 1:length(alpha)){
+          #read in ngram file
+          temp <- fread(file = paste0(version, "/ngram/ngram", file, "/", filelist[[i]]), 
+                        stringsAsFactors = FALSE)
+          
+          #count unique instances of part A and B
+          uniqueA[[i]] <- data.table(table(temp$A))
+               colnames(uniqueA[[i]]) <- c("A", "uniqueA")  
+          uniqueB[[i]] <- data.table(table(temp$B))
+               colnames(uniqueB[[i]]) <- c("B", "uniqueB")
+          
+          #count instances of A and B, place data.table in ordered list
+          countA[[i]] <- data.table(cbind(temp$A, temp$Freq))
+               colnames(countA[[i]]) <- c("A", "Freq")
+               countA[[i]]$Freq <- as.numeric(countA[[i]]$Freq)
+               countA[[i]] <- aggregate(countA[[i]]$Freq, by=list(Category = countA[[i]]$A), 
+                                   FUN=sum, na.rm = TRUE) 
+               colnames(countA[[i]]) <- c("A", "countA")
+          
+          #aggregated count of partB
+          countB[[i]] <- data.table(cbind(temp$B, temp$Freq))
+               colnames(countB[[i]]) <- c("B", "Freq")
+               countB[[i]]$Freq <- as.numeric(countB[[i]]$Freq) 
+               countB[[i]] <- aggregate(countB[[i]]$Freq, by=list(Category = countB[[i]]$B), 
+                                        FUN=sum, na.rm = TRUE) 
+               colnames(countB[[i]]) <- c("B", "countB") 
+          
+          #count of unique ngrams
+               nNgram <- nNgram + nrow(temp)
+     }  
+     
+     #aggregates count A by alphabetic file (make sure duplicates dealt with)
+          #takes count A and unique A
+          #aggregates and merges
+     allA <- list() #all A data
+     for(i in 1:length(alpha)){
+          countAtemp <-aggregate(countA[[i]]$countA, by=list(Category = countA[[i]]$A), 
+                                 FUN=sum, na.rm = TRUE)
+               colnames(countAtemp) <- c("A", "countA")
+          
+          uniqueAtemp <-aggregate(uniqueA[[i]]$uniqueA, by=list(Category = uniqueA[[i]]$A), 
+                                  FUN=sum, na.rm = TRUE)
+               colnames(uniqueAtemp) <- c("A", "uniqueA")
+          
+          allA[[i]] <- data.table(merge(countAtemp, uniqueAtemp, by = "A"))
+               colnames(allA[[i]])<- c("A", "countA", "uniqueA")
+     }
+     
+     #list of alphabetic B lists by file
+     countB <- makeUnigramsAlpha(countB, 0)
+     uniqueB <- makeUnigramsAlpha(uniqueB, 0)
+     
+     #combine uniqe instances and counts of part B
+     allB <- list()    
+     for(i in 1:26){
+          colnames(countB[[i]]) <- c("B", "countB")
+          colnames(uniqueB[[i]]) <- c("B", "uniqueB")
+          
+          allB[[i]] <- merge(uniqueB[[i]], countB[[i]], by = "B")
+          colnames(allB[[i]]) <- c("B", "countB", "uniqueB")
+     }
+     
+ 
+     #for each ngram file calculates Kneser–Ney smoothing and stupid backoff probabilities
+     #writes files with probabilities into "final" folder
+     for(i in 1:length(alpha)){ 
+          #read in ngrams
+          temp <- fread(file = paste0(version, "/ngram/ngram", file, "/", filelist[[i]]), 
+                        stringsAsFactors = FALSE)
+          #get b values that are in the individual ngram file
+               #with large datasets, using all B values results in memory issues
+          bindB <- data.table()
+          for(q in 1:length(allB)){
+               tempB <- allB[[q]]
+               tempB <- tempB[tempB$B %in% temp$B,]
+               bindB <- rbind(bindB, tempB)
+          } 
+
+          #join ngram file with counts for part B
+          temp <- merge(temp, bindB, by = "B", all = FALSE)
+          
+          #join with A counts
+          A <- allA[[i]]
+          temp <- merge(temp, allA[[i]], by = "A", all.x = TRUE, all.y = FALSE)
+          
+          disc<- d[[(file-1)]]     #extract discount for ngram
+          
+          #Kneser–Ney smoothing and stupid backoff probabilities
+          temp <- temp %>% 
+               rowwise() %>% 
+               mutate(prob= max((Freq - d), 0)/countA + (d * countA/countB) * (uniqueB/nNgram), 
+                      stupid = Freq/countA)
+
+          #this line returns top 5 most likely ngrams starting with each part A
+               #can be used to reduce the size of files when generating models
+          #temp <- setorder(setDT(temp), A, -prob)[, indx := seq_len(.N), A][indx <= 5L]
+          
+          write.csv(temp, paste0(version, "/final/ngram", file, "/", filelist[[i]]), row.names = FALSE)
+     }
+}
+
+```
+
+
