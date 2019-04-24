@@ -24,11 +24,11 @@ If deploying the model as an app, processing speed is of great importance.  Ther
 ## Files
 Below is a description of the RMD files used to run the code and the custom functions they call.  
 
-###-Files used to run code:  
+Files used to run code:  
 NgramGeneration.RMD:  Generates next word prediction model  
 EvaluateModel.RMD:  Evaluates the next word preciction model  
 
-###-Functions:
+Functions:
 clean:  
 -cleans the data 
   
@@ -54,7 +54,7 @@ Probz:
 ## Ngram Generation (NgramGeneration.RMD)
 As prevously mentioned, the NgramGeneration.RMD contains all the code necessary to generate a nextword prediction model.  Below I Describe the actions of each code chunk.  
 
-###-Options  
+Options  
 This code allows for customizing model generation.  Each variable is easily modified for use by later chunks. 
   
 version:  
@@ -111,7 +111,7 @@ d:
 -read more about this here:  
 [http://www.foldl.me/2014/kneser-ney-smoothing/]: Kneser-Ney smoothing explained  
 
-###-Setup  
+Setup  
 The Setup chunk sets up ngram generation by importing reqirued packages, custom functions, creates directory and subdirectories for the version, partions data into training and test sets.  
   
 "train" and "test" folders:  
@@ -129,22 +129,22 @@ The Setup chunk sets up ngram generation by importing reqirued packages, custom 
 -After running code, this will contain "final.sqlite" (database with table for each ngram)  
 -This folder will be searched to find the predicted next word in "EvaluateModel.RMD"  
 
-###-cleanTrain 
+cleanTrain 
 Takes training corpus and chunks training, cleans (clean.R) then places it in the "cleaned" folder.  The size of the data chunks is selected in "Options".  
 
-###-Unigrams  
+Unigrams  
 Here, the cleaned training corpus is used to generate a list unigrams (single words) and their frequency.  
 This is stored in alphabetized .csv files in "version/ngram/1gram". This code also generates a summary of word frequencies and top words (in graph).  Here, the a list of words (goodWords) is generated to decrease the size of higer order ngram files by only keeping ngrams where the last word is in the top 10% of words.  As this may effect the model, the corpus coverage using only these words is calculated.  Although this removes a large number of words, typically >90% of the corpus is comprised of these top 10% of words.
   
-###-Ngrams
+Ngrams
 Ngrams generates ngrams from cleaned test text (2 through "ngrams" ngrams).  If "ngrams" is set to 4, the model will generate 2-, 3-, and 4-grams (1-grams generated in "unigrams" chunk).  As probability calculations calculate the probability of the last word, the last word ("B") is split from the beginning words ("A") and stored in separate columns.  The files with part "A", part "B" and the frequency are stored in .csv files corresponding with the first letter of the ngram inside folder for each ngram (ex: "version/ngram/ngram4").  
   
 Here, if stats == TRUE (set in "Options" chunk), the frequency of all ngrams, top 1% of ngrams (starting with each letter) is returned.  This is not performed if stats = FALSE.  This data is used to generate graphs in the next code chunk.  
 
-###-Graphs  
+Graphs  
 The Graphs chunk takes information about ngrams and plots the frequency of top ngrams and all ngrams.  These graphs are not generated if stats is set to FALSE in the options.  These graphs are printed in the final HTML document.  
 
-###-Probabilities  
+Probabilities  
 Probabilities reads raw ngram files from "version/ngram/*" and uses d (discount provided in "options") to calculate the final ngram probability using both the backoff and Knesner-Ney probabilities.  The stupid backoff probability is stored in column "stupid" whereas the Knesner-Ney probability is stored in column "prob".   
 
 ## Model Evaluation (EvaluateModel.RMD)
@@ -195,13 +195,13 @@ remove[[1]] <- cursing
 remove[[2]] <- stopwords
 ```
 
-###-Setup 
+Setup 
 This section loads required packages, loads custom functions (clean.R to clean test data and ngSearch.R to search model for the most likely next words), and cleans a subset test data ("test").  
 
-###-Evaluate Model
+Evaluate Model
 Takes given options from "setup" then randomly cuts the string and predicts the next word and compares it to the next word using data in the SQL database generated in NgramGeneration.Rmd.  The search of the model is performed with the function "ngSearch.R"
 
-###-Summary
+Summary
 Takes the predicted word, actual word and generates a summary to evaluate model performance.  Here, the percent of times the model guesses the correct word and fails to guess the correct word is calculated.  Additionally,graphs comparing the frequency a word in the actual next word and guessed word are generated.  Predicted words with frequencies much higher or lower frequencies than the actual next word may indicated that the probability for that word is under or over-estimated in the model. 
 
 Calculations:
